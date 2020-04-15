@@ -11,6 +11,7 @@
 require 'json'
 require 'pry'
 require 'date'
+require 'set'
 # require 'minitest/autorun'
 
 class User
@@ -22,18 +23,17 @@ class User
   end
 end
 
-def parse_user(user)
-  fields = user.split(',')
+def parse_user(fields)
   parsed_result = {
     'id' => fields[1],
     'first_name' => fields[2],
     'last_name' => fields[3],
     'age' => fields[4],
+    'user_key' => [1, 2, 3].map{ |e| fields[e]}.join(' '),
   }
 end
 
-def parse_session(session)
-  fields = session.split(',')
+def parse_session(fields)
   parsed_result = {
     'user_id' => fields[1],
     'session_id' => fields[2],
@@ -51,20 +51,97 @@ def collect_stats_from_users(report, users_objects, &block)
   end
 end
 
+class Report
+  def initialize
+    @data = { :usersStats => {} }
+    @users_stats = @data[:usersStats]
+    @all_browsers = Set.new
+    @total_sessions = 0
+    @total_users = 0
+  end
+
+  def post_process
+    user = @users_stats[@current_user['user_key']]
+    [:totalTime, :longestSession].each { |e| user[e] = "#{user[e].to_s} min."}
+    browsers = user[:browsers]
+    user[:browsers] = browsers.sort.join(', ')
+    browsers.each do |e|
+      user[:alwaysUsedChrome] = e.include?('CHROME')
+      break if !user[:alwaysUsedChrome]
+    end
+    user[:usedIE] = user[:browsers].include?('INTERNET EXPLORER')
+    user[:dates].sort!.reverse!
+    user[:sessionsCount] = user[:dates].size
+  end
+
+  def push_user(user)
+    @data[:usersStats][user['user_key']] = {
+      :browsers => [],
+      :dates => [],
+      :longestSession => 0,
+      :totalTime => 0
+    }
+    post_process if !@current_user.nil?
+    @current_user = user
+    @total_users += 1
+  end
+
+  def push_session(session)
+    user = @users_stats[@current_user['user_key']]
+    user[:dates].push(Date.parse(session['date']).iso8601)
+    time = session['time'].to_i
+    user[:totalTime] += time
+    user[:longestSession] = time if time > user[:longestSession]
+
+    browser = session['browser'].upcase
+    user[:browsers].push(browser)
+    @all_browsers.add(browser)
+    @total_sessions +=1
+  end
+
+  def save(filename)
+    @data[:totalSessions] = @total_sessions
+    @data[:totalUsers] = @total_users
+    browser = @all_browsers.to_a.sort
+    @data[:allBrowsers] = browser.join(',')
+    @data[:uniqueBrowsersCount] = browser.size
+
+    # File.write(filename, "#{JSON.pretty_generate(@data)}\n")
+    File.write(filename, "#{@data.to_json}\n")
+  end
+end
+
 def work
   f1 = 'data.txt'
   f2 = 'data_large.txt'
-  file_lines = File.read(f2).split("\n")
+  f3 = 'data_large_27830.txt'
+  # file_lines = File.read(f1).split("\n")
 
   users = []
   sessions = []
 
-  file_lines.each do |line|
-    cols = line.split(',')
-    users = users + [parse_user(line)] if cols[0] == 'user'
-    sessions = sessions + [parse_session(line)] if cols[0] == 'session'
-  end
+  report = Report.new
 
+  i = 0
+  File.open(f2, "r").each_line do |line|
+    begin
+      p i if 0 == i % 5000
+      i += 1
+      cols = line.strip.split(',')
+      report.push_user(parse_user(cols)) if cols[0] == 'user'
+      report.push_session(parse_session(cols)) if cols[0] == 'session'
+    # rescue => e
+    #   p "error in #{i} line"
+    #   p e
+    #   exit
+    end
+    # users = users + [parse_user(cols)] if cols[0] == 'user'
+    # sessions = sessions + [parse_session(cols)] if cols[0] == 'session'
+  end
+  report.post_process
+  report.save('result1.json')
+
+  return
   # Отчёт в json
   #   - Сколько всего юзеров +
   #   - Сколько всего уникальных браузеров +
@@ -157,6 +234,8 @@ start_time = Time.now
 work
 end_time = Time.now
 p end_time - start_time
+# from begining 38 sec - 27830 row
+# new time 0.7 sec - 27830 row
 
 # class TestMe < Minitest::Test
 #   def setup
